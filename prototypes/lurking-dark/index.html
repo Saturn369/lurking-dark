@@ -1,0 +1,606 @@
+<!-- PROTOTYPE - NOT FOR PRODUCTION -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>The Lurking Dark</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #07070f;
+  color: #6a8050;
+  font-family: 'Courier New', Courier, monospace;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 14px 10px;
+  user-select: none;
+}
+#title {
+  font-size: 0.85rem;
+  color: #3a4a2a;
+  letter-spacing: 0.4em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+#wrap {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+#canvas {
+  display: block;
+  border: 1px solid #131a0d;
+  background: #07070f;
+  flex-shrink: 0;
+}
+#sidebar {
+  width: 210px;
+  font-size: 0.72rem;
+  line-height: 1.7;
+}
+.lbl  { color: #555555; }
+.val  { color: #dddddd; }
+
+#san-bar-wrap { width: 100%; height: 5px; background: #111710; margin: 3px 0 10px; }
+#san-bar      { height: 100%; width: 100%; transition: width 0.4s, background 0.4s; }
+
+#inv-panel {
+  border-top: 1px solid #131a0d;
+  margin-top: 8px;
+  padding-top: 8px;
+  min-height: 40px;
+  color: #3a5030;
+  font-size: 0.68rem;
+  line-height: 1.6;
+}
+#msg-log {
+  border-top: 1px solid #131a0d;
+  margin-top: 8px;
+  padding-top: 8px;
+}
+.msg        { font-size: 0.68rem; line-height: 1.5; margin-bottom: 1px; color: #555555; opacity: 0.85; }
+.msg.fresh  { color: #cccccc; opacity: 1; }
+.msg.danger { color: #ff6644; opacity: 0.9; }
+.msg.lore   { color: #6688bb; font-style: italic; opacity: 0.9; }
+.msg.good   { color: #66cc66; }
+
+#help {
+  border-top: 1px solid #131a0d;
+  margin-top: 10px;
+  padding-top: 8px;
+  font-size: 0.62rem;
+  color: #2a3620;
+  line-height: 1.7;
+}
+</style>
+</head>
+<body>
+<div id="title">The Lurking Dark</div>
+<div id="wrap">
+  <canvas id="canvas"></canvas>
+  <div id="sidebar">
+    <div><span class="lbl">HP      </span><span class="val" id="ui-hp">10/10</span></div>
+    <div><span class="lbl">SANITY  </span><span class="val" id="ui-san">100</span></div>
+    <div id="san-bar-wrap"><div id="san-bar"></div></div>
+    <div><span class="lbl">DEPTH   </span><span class="val" id="ui-depth">1</span></div>
+    <div><span class="lbl">TURN    </span><span class="val" id="ui-turn">0</span></div>
+    <div id="inv-panel"><span class="lbl">CARRYING:</span> nothing</div>
+    <div id="msg-log"></div>
+    <div id="help">
+      WASD / ARROWS — move<br>
+      bump enemy — attack<br>
+      G — pick up item<br>
+      U — use first item<br>
+      . — wait a turn<br>
+      <br>
+      <span style="color:#4a6a3a">Find the Elder Sign (*)<br>and escape with it.</span>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────
+// THE LURKING DARK  —  Lovecraftian ASCII Roguelike
+// ─────────────────────────────────────────────
+
+const CV  = document.getElementById('canvas');
+const CTX = CV.getContext('2d');
+
+const FONT   = '13px "Courier New", monospace';
+const CW = 12, CH = 17;   // cell pixel dims
+const MW = 68, MH = 36;   // map dimensions in cells
+
+CV.width  = MW * CW;
+CV.height = MH * CH;
+
+// Tile ids
+const WALL = 0, FLOOR = 1, STAIR = 2;
+
+// Palette — neon white on black
+const P = {
+  bg:        '#07070f',
+  wall:      '#2a2a2a',
+  wallVis:   '#888888',
+  floor:     '#111111',
+  floorVis:  '#333333',
+  stair:     '#886622',
+  stairVis:  '#ffcc44',
+  player:    '#ffffff',
+  deepOne:   '#44ffaa',
+  cultist:   '#ff6644',
+  lurker:    '#cc66ff',
+  shoggoth:  '#66ff44',
+  watcher:   '#ffff44',
+  tome:      '#44aaff',
+  elixir:    '#ff44aa',
+  relic:     '#ffaa44',
+  elder:     '#aaffaa',
+  sanHi:     '#22aa22',
+  sanMid:    '#aaaa22',
+  sanLo:     '#aa2222',
+};
+
+// ─── Entity definitions ───────────────────────
+const ETYPES = [
+  { name:'Deep One',  ch:'d', col:P.deepOne,  hp:7,  atk:2, def:0, proxDrain:0,  sightDrain:1,
+    lore:"A fish-eyed thing from the lightless depths regards you with ancient patience." },
+  { name:'Cultist',   ch:'c', col:P.cultist,  hp:5,  atk:3, def:1, proxDrain:0,  sightDrain:0,
+    lore:"He mutters syllables that leave bruises on the inside of your skull." },
+  { name:'Lurker',    ch:'l', col:P.lurker,   hp:4,  atk:2, def:0, proxDrain:3,  sightDrain:2,
+    lore:"It occupies a space slightly outside the one you are standing in." },
+  { name:'Watcher',   ch:'W', col:P.watcher,  hp:14, atk:5, def:2, proxDrain:6,  sightDrain:10,
+    lore:"An eyeless face turns toward you. Your nose bleeds. It knows." },
+  { name:'Shoggoth',  ch:'S', col:P.shoggoth, hp:22, atk:7, def:3, proxDrain:12, sightDrain:18,
+    lore:"Iä! Iä! The protoplasmic mass pulses with a thousand borrowed eyes." },
+];
+
+// ─── Item definitions ─────────────────────────
+function makeItems() { return [
+  { name:'Laudanum',       ch:'!', col:P.elixir, kind:'elixir',
+    use(p){ const h=3+ri(4); p.hp=Math.min(p.maxHp,p.hp+h);
+            msg(`You drink the laudanum. HP +${h}.`,'good'); } },
+  { name:'Sanity Draught', ch:'!', col:'#7a5a8a', kind:'elixir',
+    use(p){ const s=15+ri(10); p.sanity=Math.min(p.maxSanity,p.sanity+s);
+            msg(`Your thoughts slow and clarify. Sanity +${s}.`,'good'); } },
+  { name:'Forbidden Tome', ch:'?', col:P.tome, kind:'tome',
+    use(p){ p.atk+=1; p.sanity=Math.max(0,p.sanity-20);
+            msg(`Your mind fractures. But now you understand. ATK +1, Sanity -20.`,'danger');
+            sanityCheck(); } },
+  { name:'Eldritch Relic', ch:'*', col:P.relic, kind:'relic',
+    use(p){ if(Math.random()<0.5){ p.hp=Math.min(p.maxHp,p.hp+5);
+              msg(`The relic pulses with warmth. HP +5.`,'good'); }
+            else { p.sanity=Math.max(0,p.sanity-15);
+              msg(`The relic screams in frequencies felt in your teeth. Sanity -15.`,'danger');
+              sanityCheck(); } } },
+  { name:'Elder Sign',     ch:'*', col:P.elder, kind:'elder',
+    use(p){ msg(`The Elder Sign blazes. The angles close. You are free.`,'good');
+            G.won=true; G.over=true; } },
+];}
+
+// ─── Game state ───────────────────────────────
+let G = {};
+
+function newGame() {
+  const {tiles, rooms, sx, sy} = buildMap();
+  const s = rooms[0];
+  const px = s.x + (s.w>>1), py = s.y + (s.h>>1);
+
+  G = {
+    tiles, rooms, sx, sy,
+    seen:    Array.from({length:MH}, ()=>new Uint8Array(MW)),
+    vis:     Array.from({length:MH}, ()=>new Uint8Array(MW)),
+    entities: [],
+    items:    [],
+    player: { x:px, y:py, hp:10, maxHp:10, sanity:100, maxSanity:100,
+              atk:3, def:1, inv:[] },
+    msgs:    [],
+    turn:    0,
+    depth:   1,
+    over:    false,
+    won:     false,
+  };
+
+  spawnEntities(rooms);
+  spawnItems(rooms);
+  fov();
+  msg(`The darkness swallows the stairs behind you.`, 'lore');
+  msg(`Somewhere deeper, something opens its eyes.`, 'lore');
+  redraw();
+  ui();
+}
+
+// ─── Map generation ───────────────────────────
+function buildMap() {
+  const tiles = Array.from({length:MH}, ()=>new Uint8Array(MW));
+  const rooms = [];
+
+  for (let att=0; att<300 && rooms.length<14; att++) {
+    const w = 4+ri(8), h = 4+ri(7);
+    const x = 1+ri(MW-w-2), y = 1+ri(MH-h-2);
+    const r = {x,y,w,h};
+
+    if (rooms.some(q => x<q.x+q.w+1 && x+w+1>q.x && y<q.y+q.h+1 && y+h+1>q.y)) continue;
+
+    for (let ry=y; ry<y+h; ry++)
+      for (let rx=x; rx<x+w; rx++)
+        tiles[ry][rx] = FLOOR;
+
+    if (rooms.length > 0) {
+      const p = rooms[rooms.length-1];
+      const cx1=p.x+(p.w>>1), cy1=p.y+(p.h>>1);
+      const cx2=x+(w>>1),     cy2=y+(h>>1);
+      if (Math.random()<0.5) { hLine(tiles,cx1,cy1,cx2); vLine(tiles,cx2,cy1,cy2); }
+      else                   { vLine(tiles,cx1,cy1,cy2); hLine(tiles,cx1,cy2,cx2); }
+    }
+    rooms.push(r);
+  }
+
+  const last = rooms[rooms.length-1];
+  const sx = last.x+(last.w>>1), sy = last.y+(last.h>>1);
+  tiles[sy][sx] = STAIR;
+
+  return {tiles, rooms, sx, sy};
+}
+
+function hLine(t,x1,y,x2){
+  const dx=Math.sign(x2-x1)||1;
+  for(let x=x1; x!==x2+dx; x+=dx) if(inBounds(x,y)&&t[y][x]===WALL) t[y][x]=FLOOR;
+}
+function vLine(t,x,y1,y2){
+  const dy=Math.sign(y2-y1)||1;
+  for(let y=y1; y!==y2+dy; y+=dy) if(inBounds(x,y)&&t[y][x]===WALL) t[y][x]=FLOOR;
+}
+function inBounds(x,y){ return x>=0&&x<MW&&y>=0&&y<MH; }
+
+// ─── Spawn ────────────────────────────────────
+function spawnEntities(rooms) {
+  for (let i=1; i<rooms.length; i++) {
+    const r = rooms[i];
+    const n = 1+ri(2);
+    for (let j=0; j<n; j++) {
+      let t;
+      do { t = ETYPES[ri(ETYPES.length)]; } while (t.name==='Shoggoth' && i<6);
+      const x=r.x+1+ri(r.w-2), y=r.y+1+ri(r.h-2);
+      if (G.tiles[y][x]===FLOOR && !entAt(x,y))
+        G.entities.push({...t, maxHp:t.hp, hp:t.hp, id:Math.random()});
+    }
+  }
+}
+
+function spawnItems(rooms) {
+  const pool = makeItems();
+  const elderSign = pool.find(i=>i.kind==='elder');
+  const rest      = pool.filter(i=>i.kind!=='elder');
+
+  for (let i=0; i<rooms.length; i++) {
+    const r = rooms[i];
+    const isLast = i===rooms.length-1;
+    if (!isLast && Math.random()>0.55) continue;
+
+    const tmpl = isLast ? elderSign : rest[ri(rest.length)];
+    const x=r.x+1+ri(r.w-2), y=r.y+1+ri(r.h-2);
+    if (G.tiles[y][x]===FLOOR && !itemAt(x,y))
+      G.items.push({...tmpl, x, y, id:Math.random()});
+  }
+}
+
+// ─── FOV (raycasting) ─────────────────────────
+function fov() {
+  const p = G.player, R = 8;
+  for (let y=0; y<MH; y++) G.vis[y].fill(0);
+  G.vis[p.y][p.x] = 1;
+  G.seen[p.y][p.x] = 1;
+
+  for (let a=0; a<360; a+=2) {
+    const rad = a*Math.PI/180;
+    const dx  = Math.cos(rad)*0.42, dy = Math.sin(rad)*0.42;
+    let fx=p.x+0.5, fy=p.y+0.5;
+    for (let s=0; s<R/0.42; s++) {
+      const mx=Math.floor(fx), my=Math.floor(fy);
+      if (!inBounds(mx,my)) break;
+      G.vis[my][mx]  = 1;
+      G.seen[my][mx] = 1;
+      if (G.tiles[my][mx]===WALL) break;
+      fx+=dx; fy+=dy;
+    }
+  }
+}
+
+// ─── Combat ───────────────────────────────────
+function rollDmg(atk, def) { return Math.max(0, atk - def + ri(3) - 1); }
+
+function playerAttack(e) {
+  const d = rollDmg(G.player.atk, e.def);
+  e.hp -= d;
+  msg(`You strike the ${e.name} for ${d}.`);
+
+  if (e.hp <= 0) {
+    if (Math.random()<0.35) msg(e.lore, 'lore');
+    else msg(`The ${e.name} is destroyed.`, 'danger');
+    if (Math.random()<0.35) {
+      const pool=makeItems().filter(i=>i.kind!=='elder');
+      const drop=pool[ri(pool.length)];
+      G.items.push({...drop, x:e.x, y:e.y, id:Math.random()});
+    }
+    G.entities = G.entities.filter(q=>q.id!==e.id);
+  } else {
+    const ed = rollDmg(e.atk, G.player.def);
+    G.player.hp -= ed;
+    if (ed>0) msg(`The ${e.name} retaliates for ${ed}.`, 'danger');
+    if (G.player.hp<=0) { G.player.hp=0; msg(`You fall. The dark is absolute.`,'danger'); G.over=true; }
+  }
+}
+
+// ─── Enemy AI ─────────────────────────────────
+function enemyTurn() {
+  const p = G.player;
+  for (const e of G.entities) {
+    if (!G.vis[e.y][e.x]) continue;
+    const dist = Math.abs(e.x-p.x)+Math.abs(e.y-p.y);
+
+    if (e.proxDrain>0 && dist<=3) {
+      p.sanity = Math.max(0, p.sanity-e.proxDrain);
+      sanityCheck();
+      if (G.over) return;
+    }
+
+    if (dist===1) {
+      const d = rollDmg(e.atk, p.def);
+      p.hp -= d;
+      if (d>0) msg(`The ${e.name} tears at you for ${d}.`,'danger');
+      if (p.hp<=0) { p.hp=0; G.over=true;
+        msg(`You are undone. The darkness takes you.`,'danger'); return; }
+    } else if (dist<12) {
+      const dx=Math.sign(p.x-e.x), dy=Math.sign(p.y-e.y);
+      const opts=[];
+      if (dx) opts.push([dx,0]);
+      if (dy) opts.push([0,dy]);
+      if (dx&&dy) opts.push([dx,dy]);
+      for (const [mx,my] of opts) {
+        const nx=e.x+mx, ny=e.y+my;
+        if (inBounds(nx,ny) && G.tiles[ny][nx]!==WALL &&
+            !entAt(nx,ny) && !(nx===p.x&&ny===p.y)) {
+          e.x=nx; e.y=ny; break;
+        }
+      }
+    }
+  }
+}
+
+// ─── Sanity ───────────────────────────────────
+const HALLUCINATIONS = [
+  "The walls breathe.",
+  "Someone whispers your childhood name.",
+  "The geometry of this room is wrong.",
+  "Your shadow moves before you do.",
+  "You taste copper. The lantern dims.",
+  "For a moment you see through something else's eyes.",
+];
+
+function sanityCheck() {
+  const p = G.player;
+  if (p.sanity<=0) {
+    p.sanity=0;
+    msg(`Your mind tears like wet paper. You are no longer alone in your skull.`,'danger');
+    G.over=true;
+  } else if (p.sanity<=25 && Math.random()<0.35) {
+    msg(HALLUCINATIONS[ri(HALLUCINATIONS.length)], 'lore');
+  }
+}
+
+// ─── Actions ──────────────────────────────────
+function move(dx,dy) {
+  if (G.over) return;
+  const p = G.player;
+  const nx=p.x+dx, ny=p.y+dy;
+  if (!inBounds(nx,ny)) return;
+
+  const e = entAt(nx,ny);
+  if (e) { playerAttack(e); tick(); return; }
+
+  if (G.tiles[ny][nx]===WALL) return;
+
+  p.x=nx; p.y=ny;
+  tick();
+}
+
+function pickup() {
+  if (G.over) return;
+  const p = G.player;
+  const item = itemAt(p.x,p.y);
+  if (!item)           { msg(`Nothing here.`); return; }
+  if (p.inv.length>=5) { msg(`Your arms are full.`); return; }
+  p.inv.push({...item});
+  G.items = G.items.filter(i=>i.id!==item.id);
+  msg(`Taken: ${item.name}.`,'good');
+  tick();
+}
+
+function useFirst() {
+  if (G.over) return;
+  const p = G.player;
+  if (!p.inv.length) { msg(`Nothing to use.`); return; }
+  const item = p.inv.shift();
+  msg(`You use the ${item.name}.`);
+  item.use(p);
+  tick();
+}
+
+function wait() {
+  if (G.over) return;
+  msg(`You hold your breath.`, 'lore');
+  tick();
+}
+
+function tick() {
+  G.turn++;
+  if (!G.over) {
+    // Sanity drain from visible entities
+    const p=G.player;
+    for (const e of G.entities) {
+      if (G.vis[e.y][e.x] && e.sightDrain>0) {
+        p.sanity=Math.max(0,p.sanity-e.sightDrain);
+      }
+    }
+    sanityCheck();
+    if (!G.over) enemyTurn();
+  }
+  fov();
+  ui();
+  redraw();
+  if (G.over) setTimeout(endScreen, 700);
+}
+
+// ─── Messages ─────────────────────────────────
+function msg(text, kind='normal') {
+  G.msgs.unshift({text,kind});
+  if (G.msgs.length>24) G.msgs.pop();
+}
+
+// ─── UI ───────────────────────────────────────
+function ui() {
+  const p=G.player;
+  document.getElementById('ui-hp').textContent    = `${p.hp}/${p.maxHp}`;
+  document.getElementById('ui-san').textContent   = p.sanity;
+  document.getElementById('ui-depth').textContent = G.depth;
+  document.getElementById('ui-turn').textContent  = G.turn;
+
+  const pct = p.sanity/p.maxSanity;
+  const bar = document.getElementById('san-bar');
+  bar.style.width = (pct*100)+'%';
+  bar.style.background = pct>0.6 ? P.sanHi : pct>0.3 ? P.sanMid : P.sanLo;
+
+  const inv = document.getElementById('inv-panel');
+  inv.innerHTML = p.inv.length
+    ? `<span class="lbl">CARRYING:</span><br>` + p.inv.map((i,n)=>`<span style="color:#5a7a3a">${n+1}. ${i.name}</span>`).join('<br>')
+    : `<span class="lbl">CARRYING:</span> <span style="color:#2a3a20">nothing</span>`;
+
+  const log = document.getElementById('msg-log');
+  log.innerHTML = G.msgs.slice(0,9).map((m,i)=>
+    `<div class="msg ${i===0?'fresh':''} ${m.kind}">${m.text}</div>`
+  ).join('');
+}
+
+// ─── Rendering ────────────────────────────────
+function redraw() {
+  CTX.fillStyle = P.bg;
+  CTX.fillRect(0,0,CV.width,CV.height);
+  CTX.font = FONT;
+  CTX.textBaseline = 'top';
+
+  const p = G.player;
+  const sanRatio = p.sanity/p.maxSanity;
+
+  // Tiles
+  for (let y=0; y<MH; y++) {
+    for (let x=0; x<MW; x++) {
+      const s = G.seen[y][x], v = G.vis[y][x];
+      if (!s) continue;
+      const t = G.tiles[y][x];
+      let ch, col;
+
+      if (t===WALL)  { ch='#'; col = v ? P.wallVis  : P.wall; }
+      else if (t===STAIR){ ch='>'; col = v ? P.stairVis : P.stair; }
+      else           { ch='.'; col = v ? P.floorVis : P.floor; }
+
+      // sanity hallucinations: flicker random chars at low sanity
+      if (v && sanRatio<0.3 && Math.random()<0.004) {
+        ch  = String.fromCharCode(33+ri(90));
+        col = '#2a1a1a';
+      }
+
+      CTX.fillStyle = col;
+      CTX.fillText(ch, x*CW, y*CH);
+    }
+  }
+
+  // Items
+  for (const it of G.items) {
+    if (!G.vis[it.y][it.x]) continue;
+    CTX.fillStyle = it.col;
+    CTX.fillText(it.ch, it.x*CW, it.y*CH);
+  }
+
+  // Entities
+  for (const e of G.entities) {
+    if (!G.vis[e.y][e.x]) continue;
+    CTX.fillStyle = (sanRatio<0.35 && Math.random()<0.08) ? '#c02020' : e.col;
+    CTX.fillText(e.ch, e.x*CW, e.y*CH);
+  }
+
+  // Player
+  CTX.fillStyle = sanRatio<0.25 ? '#e04030' : P.player;
+  CTX.fillText('@', p.x*CW, p.y*CH);
+}
+
+// ─── End screen ───────────────────────────────
+function endScreen() {
+  const ov = document.createElement('div');
+  ov.style.cssText =
+    'position:fixed;top:0;left:0;right:0;bottom:0;'+
+    'background:rgba(7,7,15,0.96);z-index:50;'+
+    'display:flex;flex-direction:column;align-items:center;justify-content:center;'+
+    'font-family:"Courier New",monospace;text-align:center;padding:30px;';
+
+  if (G.won) {
+    ov.innerHTML = `
+      <div style="color:#78a050;font-size:1.1rem;letter-spacing:0.3em;margin-bottom:20px">YOU ENDURE</div>
+      <div style="color:#3a5030;font-size:0.78rem;max-width:380px;line-height:2.0">
+        The Elder Sign burns the angles shut.<br>
+        You surface into a grey Arkham dawn,<br>
+        clutching a truth you will spend the rest<br>
+        of your life trying to forget.
+      </div>
+      <div style="color:#2a3820;font-size:0.65rem;margin-top:18px">
+        Turns: ${G.turn} &nbsp;·&nbsp; Sanity remaining: ${G.player.sanity}
+      </div>
+      <div style="color:#2a3a1a;font-size:0.7rem;margin-top:28px;cursor:pointer" onclick="restart()">[R — descend again]</div>`;
+  } else {
+    const byWounds = G.player.hp<=0;
+    ov.innerHTML = `
+      <div style="color:#5a2010;font-size:1.1rem;letter-spacing:0.3em;margin-bottom:20px">YOU ARE LOST</div>
+      <div style="color:#2e1a0e;font-size:0.78rem;max-width:380px;line-height:2.0">
+        ${byWounds
+          ? "They find you three days later, cold<br>and empty-eyed, smiling at nothing."
+          : "You did not die.<br>You became something that no longer needs<br>a name like <em>death</em>."}
+      </div>
+      <div style="color:#221008;font-size:0.65rem;margin-top:18px">Turns survived: ${G.turn}</div>
+      <div style="color:#221008;font-size:0.7rem;margin-top:28px;cursor:pointer" onclick="restart()">[R — try again]</div>`;
+  }
+
+  document.body.appendChild(ov);
+  document.addEventListener('keydown', function h(e){
+    if (e.key==='r'||e.key==='R') { ov.remove(); document.removeEventListener('keydown',h); restart(); }
+  });
+}
+
+function restart() { newGame(); }
+
+// ─── Input ────────────────────────────────────
+const KEYS = {
+  ArrowUp:[0,-1], w:[0,-1], W:[0,-1],
+  ArrowDown:[0,1], s:[0,1], S:[0,1],
+  ArrowLeft:[-1,0], a:[-1,0], A:[-1,0],
+  ArrowRight:[1,0], d:[1,0], D:[1,0],
+};
+
+// ─── Helpers ──────────────────────────────────
+function ri(n) { return Math.floor(Math.random()*n); }
+function entAt(x,y) { return G.entities.find(e=>e.x===x&&e.y===y); }
+function itemAt(x,y){ return G.items.find(i=>i.x===x&&i.y===y); }
+
+// ─── Boot ─────────────────────────────────────
+newGame();
+
+window.addEventListener('keydown', e => {
+  if (G.over) return;
+  if (KEYS[e.key]) { e.preventDefault(); move(...KEYS[e.key]); }
+  else if (e.key==='.') wait();
+  else if (e.key==='g'||e.key==='G') pickup();
+  else if (e.key==='u'||e.key==='U') useFirst();
+});
+</script>
+</body>
+</html>
